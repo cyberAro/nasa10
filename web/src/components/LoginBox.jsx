@@ -1,50 +1,53 @@
 import { useState } from "react";
-import { KeyRound, LogOut, Smartphone } from "lucide-react";
-import { logOut, sendLoginCode, useApiUrl, useUser, verifyLoginCode } from "../lib/store.js";
+import { signInWithEmailAndPassword } from "firebase/auth";
+import { auth } from "../firebase"; // Points back to the firebase.js file in src
 
-const masked = (p) => (p ? `${p.slice(0, 5)}***${p.slice(-4)}` : "");
+export default function LoginBox() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
 
-// Optional phone login on the farmer page. Hidden until the login service has a public address (config/api).
-export default function LoginBox({ t, lang = "en" }) {
-  const api = useApiUrl();
-  const user = useUser();
-  const [open, setOpen] = useState(false);
-  const [phone, setPhone] = useState("");
-  const [req, setReq] = useState(null);
-  const [code, setCode] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
-  if (!api && !user) return null;
-
-  if (user) return (
-    <div className="s-login done"><Smartphone size={18} aria-hidden="true" /><span>{t.loggedAs(masked(user.uid))}</span>
-      <button className="link" onClick={() => logOut()}><LogOut size={16} aria-hidden="true" /> {t.logout}</button></div>
-  );
-  if (!open) return <button className="s-login-open" onClick={() => setOpen(true)}><Smartphone size={18} aria-hidden="true" /> {t.login}</button>;
-
-  const run = (fn) => async (e) => {
-    e.preventDefault(); setBusy(true); setErr("");
-    try { await fn(); } catch (x) { setErr(x.message); } finally { setBusy(false); }
+  const handleLogin = (e) => {
+    e.preventDefault();
+    setError("");
+    setSuccess("");
+    
+    signInWithEmailAndPassword(auth, email, password)
+      .then((userCredential) => {
+        setSuccess(`Logged in as: ${userCredential.user.email}`);
+      })
+      .catch((error) => {
+        setError("Login failed. Check your email and password.");
+      });
   };
+
   return (
-    <section className="s-step s-login">
-      <h2><KeyRound size={20} aria-hidden="true" /> {t.login}</h2>
-      <p className="s-why">{t.loginWhy}</p>
-      {!req ? (
-        <form onSubmit={run(async () => setReq(await sendLoginCode(api, phone, lang)))} className="s-login-row">
-          <label htmlFor="login-phone" className="sr">{t.phone}</label>
-          <input id="login-phone" value={phone} onChange={(e) => setPhone(e.target.value)} inputMode="tel" autoComplete="tel" placeholder="07X XXX XXXX" />
-          <button className="s-pick" disabled={busy || phone.replace(/\D/g, "").length < 9}>{t.sendCode}</button>
-        </form>
-      ) : (
-        <form onSubmit={run(() => verifyLoginCode(api, req.reqid, code))} className="s-login-row">
-          <p className="s-now">{t.sentTo(req.phone)}</p>
-          <label htmlFor="login-code" className="sr">{t.code}</label>
-          <input id="login-code" value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" placeholder={t.code} />
-          <button className="s-pick" disabled={busy || code.length < 4}>{t.verify}</button>
-        </form>
-      )}
-      {err && <p className="s-care" role="alert">{err}</p>}
-    </section>
+    <div style={{ maxWidth: "400px", margin: "20px auto", padding: "20px", border: "1px solid #ccc", borderRadius: "8px" }}>
+      <h2 style={{ textAlign: "center" }}>Sign In</h2>
+      <form onSubmit={handleLogin} style={{ display: "flex", flexDirection: "column", gap: "15px" }}>
+        <input 
+          type="email" 
+          placeholder="Email Address" 
+          value={email}
+          onChange={(e) => setEmail(e.target.value)} 
+          required
+          style={{ padding: "10px", fontSize: "16px" }}
+        />
+        <input 
+          type="password" 
+          placeholder="Password" 
+          value={password}
+          onChange={(e) => setPassword(e.target.value)} 
+          required
+          style={{ padding: "10px", fontSize: "16px" }}
+        />
+        <button type="submit" style={{ padding: "10px", fontSize: "16px", backgroundColor: "#007bff", color: "white", border: "none", borderRadius: "4px", cursor: "pointer" }}>
+          Login
+        </button>
+      </form>
+      {error && <p style={{ color: "red", marginTop: "15px", textAlign: "center" }}>{error}</p>}
+      {success && <p style={{ color: "green", marginTop: "15px", textAlign: "center" }}>{success}</p>}
+    </div>
   );
 }
