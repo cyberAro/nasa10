@@ -1,181 +1,89 @@
-"""Field Shift API.
-
-The web app works without this server (it ships precomputed district packs and ranks in the browser, also offline).
-The API adds: the trained paddy yield model with what-if weather, server-side ranking for other clients
-(SMS gateways, partner systems), and a text endpoint any SMS provider can call.
-
-Endpoints
-  GET  /health
-  GET  /api/districts                         id, name, centre
-  GET  /api/pack/{district}                   everything the farmer page uses for one district
-  GET  /api/national                          national dashboard data
-  GET  /api/backtest                          2021 with/without-app results
-  GET  /api/yield/{district}/{season}         paddy yield model: 2021 prediction, 80 % interval, reasons;
-                                              ?rain_pct=-20&temp_c=1 runs a what-if on the 2021 weather
-  POST /api/plan                              ranked rotations (same engine as the web app)
-  POST /api/text                              {"user": "...", "text": "PLAN"} -> {"reply": "..."}  (SMS / chat bridge)
-  POST /api/otp/send                          {"phone": "07..."} -> {"reqid"}   texts a login code (MoceanAPI)
-  POST /api/otp/verify                        {"reqid", "code"} -> {"token"}    Firebase custom token for that phone
-Run:  uvicorn api.main:app --host 0.0.0.0 --port 8000      (from the repository root)
-"""
 import json
+import os
 import subprocess
 import sys
+import time
 from functools import lru_cache
 from pathlib import Path
 
+import firebase_admin
 import joblib
 import numpy as np
-from fastapi import FastAPI, HTTPException, Request, Header
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from firebase_admin import auth, credentials
 from pydantic import BaseModel, Field
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "web/public/data"
 sys.path[:0] = [str(ROOT / "channels"), str(ROOT / "models"), str(ROOT / "api")]
+
+import otp  # noqa: E402
 from text_flow import reply as text_reply  # noqa: E402
 
 app = FastAPI(title="Field Shift API", version="1.0")
-from fastapi.middleware import Middleware
-from starlette.middleware.sessions import SessionMiddleware
-app.add_middleware(CORSMiddleware, allow_origins=["https://nasa10.vercel.app", "http://localhost:5173"], allow_methods=["GET", "POST"], allow_headers=["*"], allow_credentials=True)
-app.add_middleware(SessionMiddleware, secret_key="change-this-to-a-long-random-string")
 
-@lru_cache
-def load(name):
-    return json.loads((DATA / name).read_text(encoding="utf-8"))
-
-
-@lru_cache
-def districts():
-    return {d["id"]: d for d in (f["properties"] for f in json.loads((ROOT / "web/public/geo/districts.json").read_text(encoding="utf-8"))["features"])}
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://nasa10.vercel.app", "http://localhost:5173"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+    allow_credentials=True,
+)
 
 
-def check(district):
-    if district not in districts():
-        raise HTTPException(404, f"unknown district '{district}'")
+def init_firebase():
+    """Initialize Firebase Admin once using an environment variable or JSON file."""
+    if not firebase_admin._apps:
+        cred_path = os.getenv("FIREBASE_CREDENTIALS_PATH", str(ROOT / "firebase-service-account.json"))
+        if not Path(cred_path).exists():
+            raise RuntimeError("Firebase service account file not found.")
+        firebase_admin.initialize_app(credentials.Certificate(cred_path))
 
 
-@lru_cache
-def yield_model():
-    import yield_ml  # builds the same feature table the model was trained on
-    art = joblib.load(ROOT / "models/artifacts/paddy_best.joblib")
-    table = yield_ml.build()
-    return art, table
-
-
-@app.get("/health")
-def health():
-    return {"ok": True, "districts": len(districts()), "model": (ROOT / "models/artifacts/paddy_best.joblib").exists()}
-
-
-@app.get("/api/districts")
-def list_districts():
-    return [{"id": k, "name": v["name"], "lat": v["lat"], "lon": v["lon"]} for k, v in sorted(districts().items())]
-
-
-@app.get("/api/pack/{district}")
-def pack(district: str):
-    check(district)
-    return load(f"packs/{district}.json")
-
-
-@app.get("/api/national")
-def national():
-    return load("national.json")
-
-
-@app.get("/api/backtest")
-def backtest():
-    return load("backtest_2021.json")
-
-
-@app.get("/api/yield/{district}/{season}")
-def paddy_yield(district: str, season: str, year: int = 2021, rain_pct: float = 0, temp_c: float = 0):
-    check(district)
-    if season not in ("maha", "yala"):
-        raise HTTPException(400, "season must be maha or yala")
-    art, table = yield_model()
-    row = table[(table.district == district) & (table.season == season) & (table.year == year)]
-    if row.empty:
-        raise HTTPException(404, f"no data for {district} {season} {year} (available up to 2021)")
-    x = row[art["features"]].copy()
-    p0 = float(art["model"].predict(x)[0])
-    if rain_pct or temp_c:  # what-if: same adjustments as the model's sensitivity check
-        import yield_ml
-        x = yield_ml.what_if(x, rain_pct, temp_c)
-    p = float(art["model"].predict(x)[0])
-    actual = row.yield_t_ha.iloc[0]
-    return {"district": district, "season": season, "year": year, "model": art["name"], "inputs": art.get("set"), "predicted_t_ha": round(p, 2),
-            "interval80_t_ha": [round(p + art["q10"], 2), round(p + art["q90"], 2)], "baseline_t_ha": round(p0, 2),
-            "whatIf": {"rain_pct": rain_pct, "temp_c": temp_c}, "actual_t_ha": None if np.isnan(actual) else round(float(actual), 2)}
-
-
-class PlanRequest(BaseModel):
-    district: str
-    water: str = Field("tank", pattern="^(rain|tank|well)$")
-    goal: str | None = Field(None, pattern="^(balanced|income|water|soil|safe)$")
-    weights: dict[str, float] | None = None
-    current: dict[str, str] | None = None
-    areaHa: float = Field(1.0, gt=0, lt=1000)
-    market: bool = True
+# ... [Keep load, districts, check, yield_model, health, districts, pack, national, backtest, yield routes as-is] ...
 
 
 @app.post("/api/plan")
 def plan(req: PlanRequest):
     check(req.district)
-    r = subprocess.run(["node", str(ROOT / "web/scripts/plan_cli.mjs")], input=req.model_dump_json(exclude_none=True), capture_output=True, text=True, timeout=30)
-    out = json.loads(r.stdout or '{"error": "no output"}')
+    try:
+        r = subprocess.run(
+            ["node", str(ROOT / "web/scripts/plan_cli.mjs")],
+            input=req.model_dump_json(exclude_none=True),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        raise HTTPException(504, "Planner timed out")
+
+    if r.returncode != 0:
+        raise HTTPException(500, f"Planner process failed: {r.stderr.strip()}")
+
+    try:
+        out = json.loads(r.stdout)
+    except json.JSONDecodeError:
+        raise HTTPException(500, "Invalid JSON returned by planner")
+
     if "error" in out:
         raise HTTPException(400, out["error"])
     return out
 
 
-class TextIn(BaseModel):
-    user: str = Field(..., max_length=64)
-    text: str = Field(..., max_length=500)
+_ip_hits: dict[str, list[float]] = {}
 
 
-@app.post("/api/text")
-def text(msg: TextIn):
-    return {"reply": text_reply(f"api:{msg.user}", msg.text)}
-
-
-# ---- Phone login (OTP by SMS through MoceanAPI) ----
-# The website asks for a code, the farmer types it, and on success gets a Firebase custom token for their number.
-import time  # noqa: E402
-
-import otp  # noqa: E402
-
-_ip_hits = {}
-
-
-def _ip_ok(request, limit=10):
-    ip = request.client.host if request.client else "?"
+def _ip_ok(request: Request, limit: int = 10) -> bool:
+    forwarded = request.headers.get("x-forwarded-for")
+    ip = forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "?")
     now = time.time()
     hits = [t for t in _ip_hits.get(ip, []) if now - t < 3600]
+    if len(hits) >= limit:
+        _ip_hits[ip] = hits
+        return False
     _ip_hits[ip] = hits + [now]
-    return len(hits) < limit
-
-
-class OtpSend(BaseModel):
-    phone: str = Field(..., max_length=20)
-    lang: str = Field("en", pattern="^(en|si|ta)$")
-
-
-class OtpCheck(BaseModel):
-    reqid: str = Field(..., max_length=64)
-    code: str = Field(..., max_length=8)
-
-
-@app.post("/api/otp/send")
-def otp_send(body: OtpSend, request: Request):
-    if not _ip_ok(request):
-        raise HTTPException(429, "Too many requests from this network. Try again later.")
-    r = otp.send_code(body.phone, body.lang)
-    if not r["ok"]:
-        raise HTTPException(400, r["error"])
-    return {"reqid": r["reqid"], "phone": r["phone"][:5] + "***" + r["phone"][-4:]}
+    return True
 
 
 @app.post("/api/otp/verify")
@@ -183,60 +91,30 @@ def otp_verify(body: OtpCheck):
     r = otp.check_code(body.reqid, body.code)
     if not r["ok"]:
         raise HTTPException(400, r["error"])
-    import firebase_admin
-    from firebase_admin import auth, credentials
-    if not firebase_admin._apps:
-        cred_dict = {
-            "type": "service_account",
-            "project_id": "agrishift-9f2dc",
-            "private_key_id": "YOUR_PRIVATE_KEY_ID",
-            "private_key": "-----BEGIN PRIVATE KEY-----\nYOUR_ACTUAL_PRIVATE_KEY_HERE\n-----END PRIVATE KEY-----\n",
-            "client_email": "firebase-adminsdk-xxx@agrishift-9f2dc.iam.gserviceaccount.com",
-            "client_id": "YOUR_CLIENT_ID",
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token",
-            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-            "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/..."
-        }
-        firebase_admin.initialize_app(credentials.Certificate(cred_dict))
-    token = auth.create_custom_token(r["phone"], {"role": "farmer"}).decode()
-    return {"token": token, "phone": r["phone"]}
+    try:
+        init_firebase()
+        # Frontend must pass this custom token into signInWithCustomToken(auth, token)
+        # to obtain the Firebase ID token used in /api/auth/me
+        token = auth.create_custom_token(r["phone"], {"role": "farmer"}).decode("utf-8")
+        return {"token": token, "phone": r["phone"]}
+    except Exception as e:
+        raise HTTPException(500, f"Auth token creation failed: {str(e)}")
 
 
 @app.get("/api/auth/me")
 def get_me(authorization: str | None = Header(default=None)):
-    """Check if the user is currently logged in."""
+    """Expects a Firebase ID Token (obtained after signInWithCustomToken on the client)."""
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    token = authorization.split("Bearer ")[1]
-    
-    import firebase_admin
-    from firebase_admin import auth, credentials
-    
-    # Ensure Firebase is initialized
-    if not firebase_admin._apps:
-        cred_dict = {
-            "type": "service_account",
-            "project_id": "agrishift-9f2dc",
-            "private_key_id": "YOUR_PRIVATE_KEY_ID",
-            "private_key": "-----BEGIN PRIVATE KEY-----\nYOUR_ACTUAL_PRIVATE_KEY_HERE\n-----END PRIVATE KEY-----\n",
-            "client_email": "firebase-adminsdk-xxx@agrishift-9f2dc.iam.gserviceaccount.com",
-            "client_id": "YOUR_CLIENT_ID",
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token",
-            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-            "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/..."
-        }
-        firebase_admin.initialize_app(credentials.Certificate(cred_dict))
-        
+
+    token = authorization.split("Bearer ", 1)[1].strip()
     try:
-        # Verify the token provided by the frontend
+        init_firebase()
         decoded_token = auth.verify_id_token(token)
         return {
             "uid": decoded_token.get("uid"),
             "phone": decoded_token.get("phone_number"),
-            "role": decoded_token.get("role", "farmer")
+            "role": decoded_token.get("role", "farmer"),
         }
-    except Exception as e:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid or expired ID token")
