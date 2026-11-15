@@ -187,3 +187,33 @@ def otp_verify(body: OtpCheck):
         firebase_admin.initialize_app(credentials.Certificate(str(ROOT / "firebase-service-account.json")))
     token = auth.create_custom_token(r["phone"], {"role": "farmer"}).decode()
     return {"token": token, "phone": r["phone"]}
+
+
+
+from fastapi import Header
+
+@app.get("/api/auth/me")
+def get_me(authorization: str | None = Header(default=None)):
+    """Check if the user is currently logged in."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    token = authorization.split("Bearer ")[1]
+    
+    import firebase_admin
+    from firebase_admin import auth, credentials
+    
+    # Ensure Firebase is initialized
+    if not firebase_admin._apps:
+        firebase_admin.initialize_app(credentials.Certificate(str(ROOT / "firebase-service-account.json")))
+        
+    try:
+        # Verify the token provided by the frontend
+        decoded_token = auth.verify_id_token(token)
+        return {
+            "uid": decoded_token.get("uid"),
+            "phone": decoded_token.get("phone_number"),
+            "role": decoded_token.get("role", "farmer")
+        }
+    except Exception as e:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
