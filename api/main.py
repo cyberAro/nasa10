@@ -26,7 +26,7 @@ from pathlib import Path
 
 import joblib
 import numpy as np
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -184,13 +184,22 @@ def otp_verify(body: OtpCheck):
     import firebase_admin
     from firebase_admin import auth, credentials
     if not firebase_admin._apps:
-        firebase_admin.initialize_app(credentials.Certificate(str(Path(__file__).parent / "firebase-service-account.json")))
+        cred_dict = {
+            "type": "service_account",
+            "project_id": "agrishift-9f2dc",
+            "private_key_id": "YOUR_PRIVATE_KEY_ID",
+            "private_key": "-----BEGIN PRIVATE KEY-----\nYOUR_ACTUAL_PRIVATE_KEY_HERE\n-----END PRIVATE KEY-----\n",
+            "client_email": "firebase-adminsdk-xxx@agrishift-9f2dc.iam.gserviceaccount.com",
+            "client_id": "YOUR_CLIENT_ID",
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+            "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/..."
+        }
+        firebase_admin.initialize_app(credentials.Certificate(cred_dict))
     token = auth.create_custom_token(r["phone"], {"role": "farmer"}).decode()
     return {"token": token, "phone": r["phone"]}
 
-
-
-from fastapi import Header
 
 @app.get("/api/auth/me")
 def get_me(authorization: str | None = Header(default=None)):
@@ -205,7 +214,19 @@ def get_me(authorization: str | None = Header(default=None)):
     
     # Ensure Firebase is initialized
     if not firebase_admin._apps:
-        firebase_admin.initialize_app(credentials.Certificate(str(Path(__file__).parent / "firebase-service-account.json")))
+        cred_dict = {
+            "type": "service_account",
+            "project_id": "agrishift-9f2dc",
+            "private_key_id": "YOUR_PRIVATE_KEY_ID",
+            "private_key": "-----BEGIN PRIVATE KEY-----\nYOUR_ACTUAL_PRIVATE_KEY_HERE\n-----END PRIVATE KEY-----\n",
+            "client_email": "firebase-adminsdk-xxx@agrishift-9f2dc.iam.gserviceaccount.com",
+            "client_id": "YOUR_CLIENT_ID",
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+            "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/..."
+        }
+        firebase_admin.initialize_app(credentials.Certificate(cred_dict))
         
     try:
         # Verify the token provided by the frontend
