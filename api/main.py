@@ -184,7 +184,7 @@ def otp_verify(body: OtpCheck):
     import firebase_admin
     from firebase_admin import auth, credentials
     if not firebase_admin._apps:
-        firebase_admin.initialize_app(credentials.Certificate(str(ROOT / "firebase-service-account.json")))
+        firebase_admin.initialize_app(credentials.Certificate(str(Path(__file__).parent / "firebase-service-account.json")))
     token = auth.create_custom_token(r["phone"], {"role": "farmer"}).decode()
     return {"token": token, "phone": r["phone"]}
 
@@ -205,7 +205,7 @@ def get_me(authorization: str | None = Header(default=None)):
     
     # Ensure Firebase is initialized
     if not firebase_admin._apps:
-        firebase_admin.initialize_app(credentials.Certificate(str(ROOT / "firebase-service-account.json")))
+        firebase_admin.initialize_app(credentials.Certificate(str(Path(__file__).parent / "firebase-service-account.json")))
         
     try:
         # Verify the token provided by the frontend
