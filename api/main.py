@@ -36,8 +36,10 @@ sys.path[:0] = [str(ROOT / "channels"), str(ROOT / "models"), str(ROOT / "api")]
 from text_flow import reply as text_reply  # noqa: E402
 
 app = FastAPI(title="Field Shift API", version="1.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "POST"], allow_headers=["*"])
-
+from fastapi.middleware import Middleware
+from starlette.middleware.sessions import SessionMiddleware
+app.add_middleware(CORSMiddleware, allow_origins=["https://nasa10.vercel.app", "http://localhost:5173"], allow_methods=["GET", "POST"], allow_headers=["*"], allow_credentials=True)
+app.add_middleware(SessionMiddleware, secret_key="change-this-to-a-long-random-string")
 
 @lru_cache
 def load(name):
